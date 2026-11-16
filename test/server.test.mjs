@@ -1,0 +1,503 @@
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import assert from 'node:assert/strict'
+import { after, beforeEach, describe, it } from 'node:test'
+
+import { createHandlers, decodeUserKey, maskKey, memoryStatus, storePathFor } from '../index.js'
+
+/** 一个够用的假凭据服务：行为对齐 dsh-credentials 的 resolve/describe/set。 */
+function fakeCredentials(initial = {}) {
+  const refs = new Map(Object.entries(initial))
+  const writes = []
+  return {
+    writes,
+    async resolve(ref) {
+      return refs.has(ref) ? { value: refs.get(ref), source: 'store' } : undefined
+    },
+    async describe(ref) {
+      return { configured: refs.has(ref), source: refs.has(ref) ? 'store' : undefined, writable: true }
+    },
+    async set(ref, value) {
+      writes.push([ref, value])
+      refs.set(ref, value)
+    },
+    async unset(ref) {
+      refs.delete(ref)
+    },
+  }
+}
+
+const dir = mkdtempSync(join(tmpdir(), 'gateway-switch-test-'))
+after(() => rmSync(dir, { recursive: true, force: true }))
+
+describe('maskKey', () => {
+  it('只保留前 9 个字符', () => {
+    assert.equal(maskKey('ovgw_Ee-VE_fNHvLYxeaUYkWhcQoqgXFVfWr3i'), 'ovgw_Ee-V…')
+  })
+  it('空值给空串', () => {
+    assert.equal(maskKey(''), '')
+    assert.equal(maskKey(undefined), '')
+  })
+})
+
+describe('storePathFor', () => {
+  it('跟随 DSH_HOME', () => {
+    assert.equal(storePathFor({ DSH_HOME: 'C:\\x\\.dsh' }), join('C:\\x\\.dsh', 'gateway-switch', 'keys.json'))
+  })
+})
+
+describe('decodeUserKey', () => {
+  it('从 user key 解出 account 与 user', () => {
+    assert.deepEqual(decodeUserKey('ZGVtbw.YWxpY2U.c2ln'), { account: 'demo', user: 'alice' })
+  })
+
+  it('解不出来时返回 null', () => {
+    assert.equal(decodeUserKey(''), null)
+    assert.equal(decodeUserKey('only-one-part'), null)
+    assert.equal(decodeUserKey(null), null)
+  })
+})
+
+describe('memoryStatus', () => {
+  it('插件在场：身份固定，切 key 不改变记忆空间', () => {
+    const status = memoryStatus({ plugin: true, userKey: 'ZGVtbw.YWxpY2U.c2ln' })
+    assert.equal(status.mode, 'plugin')
+    assert.equal(status.user, 'alice')
+    assert.equal(status.account, 'demo')
+    assert.match(status.hint, /切 key 不改变记忆空间/)
+  })
+
+  it('插件不在场：记忆随 gateway key 归属', () => {
+    const status = memoryStatus({ plugin: false, userKey: 'ZGVtbw.YWxpY2U.c2ln' })
+    assert.equal(status.mode, 'gateway')
+    assert.equal(status.user, null, '网关模式下不从 ovcli.conf 推断身份')
+    assert.match(status.hint, /openviking 供应商/)
+  })
+})
+
+describe('createHandlers', () => {
+  const personal = 'ovgw_personal_bbbbbbbbbbbbbbbb'
+  const personalName = '研发团队'
+  let storePath
+  let ovConfPath
+  let credentials
+  let handlers
+
+  const modelsReply = (authorized) => ({
+    ok: authorized,
+    status: authorized ? 200 : 401,
+    text: async () => JSON.stringify({ data: [{ id: 'deepseek-v4.1-flash' }, { id: 'gpt-5.5' }] }),
+  })
+
+  const selfKey = 'ovgw_self_ssssssssssssssssssssss'
+
+  /** 直接落一份「已绑个人 key」的密钥环：大部分用例只关心团队 key 的行为。 */
+  const seedPersonal = () => {
+    writeFileSync(
+      storePath,
+      JSON.stringify({ nextId: 2, personalId: 'k1', pendingJoins: [], items: [{ id: 'k1', label: '本人', key: selfKey, role: 'personal' }] }),
+    )
+  }
+  const teamItem = (state) => state.items.find((item) => item.role === 'team')
+
+  beforeEach(() => {
+    storePath = join(dir, `keys-${Math.random().toString(36).slice(2)}.json`)
+    ovConfPath = join(dir, `ov-${Math.random().toString(36).slice(2)}.conf`)
+    writeFileSync(ovConfPath, JSON.stringify({ server: { root_api_key: 'root-test' } }))
+    credentials = fakeCredentials({ OPENVIKING_GATEWAY_KEY: 'ovgw_current_aaaaaaaaaaaaaaaaaaaa' })
+    handlers = createHandlers({
+      config: {
+        credentialRef: 'OPENVIKING_GATEWAY_KEY',
+        gatewayBaseURL: 'http://gw.local/gateway/',
+        adminKey: 'admin-test',
+      },
+      credentials,
+      storePath,
+      fetchImpl: async (url, init) => {
+        if (url.startsWith('http://gw.local/gateway/admin/keys')) {
+          assert.match(url, /account_id=demo/)
+          assert.equal(init.headers.Authorization, 'Bearer admin-test')
+          assert.equal(init.method, 'GET', '取名凭证只允许 GET')
+          assert.equal(init.body, undefined, '取名凭证的请求不能带 body')
+          assert.equal(init.redirect, 'error', '不跟随重定向，避免把凭证带去别处')
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify([
+              { id: createHash('sha256').update(personal).digest('hex'), name: personalName, prefix: personal.slice(0, 12) },
+            ]),
+          }
+        }
+        assert.equal(url, 'http://gw.local/gateway/v1/models')
+        return modelsReply(init.headers.Authorization.startsWith('Bearer '))
+      },
+    })
+  })
+
+  it('初始状态：标记已配置，且不回传明文', async () => {
+    const state = await handlers.endpoints.state()
+    assert.equal(state.credentialRef, 'OPENVIKING_GATEWAY_KEY')
+    assert.equal(state.gatewayBaseURL, 'http://gw.local/gateway', '末尾斜杠被归一化')
+    assert.equal(state.configured, true)
+    assert.equal(state.activePrefix, 'ovgw_curr…')
+    assert.equal(state.items.length, 0)
+    assert.equal(state.needPersonal, true, '还没绑个人 key')
+    assert.equal(JSON.stringify(state).includes('ovgw_current_aaaa'), false, 'state 里不能出现明文密钥')
+  })
+
+  it('add 用网关侧的名字自动命名，落盘 + 只返回掩码，activate 走 credentials.set 实现热切换', async () => {
+    seedPersonal()
+    const added = await handlers.endpoints.add({ key: personal })
+    const team = teamItem(added)
+    assert.equal(added.items.length, 2, '个人 key 之外新增一把团队 key')
+    assert.equal(team.label, personalName, '名字来自网关，不由用户填')
+    assert.equal(team.prefix, 'ovgw_pers…')
+    assert.equal(team.active, false)
+
+    const activated = await handlers.endpoints.activate({ id: team.id })
+    assert.deepEqual(credentials.writes.at(-1), ['OPENVIKING_GATEWAY_KEY', 'ovgw_personal_bbbbbbbbbbbbbbbb'])
+    assert.equal(teamItem(activated).active, true, '切换后该条目成为 active')
+    assert.equal(activated.activePrefix, 'ovgw_pers…')
+    assert.equal(activated.activeLabel, personalName, '药丸直接拿这个名字显示')
+
+    const onDisk = JSON.parse(readFileSync(storePath, 'utf8'))
+    assert.equal(onDisk.items.find((item) => item.role === 'team').key, personal, '密钥落盘供下次切换')
+  })
+
+  it('remove 之后只剩个人 key，占位符仍可用', async () => {
+    seedPersonal()
+    const added = await handlers.endpoints.add({ key: 'ovgw_temp_cccccccccccccccccccc' })
+    const team = teamItem(added)
+    const removed = await handlers.endpoints.remove({ id: team.id })
+    assert.equal(removed.items.length, 1)
+    assert.equal(removed.items[0].role, 'personal', '个人 key 不会被顺手删掉')
+    await assert.rejects(() => handlers.endpoints.remove({ id: team.id }), /没有这个密钥/)
+  })
+
+  it('没绑个人 key 就加团队 key：明确拒绝，而不是默默收下', async () => {
+    const error = await handlers.endpoints.add({ key: personal }).then(
+      () => null,
+      (caught) => caught,
+    )
+    assert.equal(error?.code, 'NEED_PERSONAL')
+    assert.equal(existsSync(storePath), false, '拒绝时不应该落盘')
+
+    const fallback = await handlers.endpoints.add({ key: personal, role: 'personal' })
+    assert.equal(fallback.items.length, 1)
+    assert.equal(fallback.items[0].role, 'personal')
+  })
+
+  it('反查不到名字（没有根凭证）时降级成掩码标签，不阻塞入库', async () => {
+    const offline = createHandlers({
+      config: {
+        credentialRef: 'OPENVIKING_GATEWAY_KEY',
+        gatewayBaseURL: 'http://gw.local/gateway',
+        adminKeysFile: join(dir, 'no-such-admin.json'),
+        ovConfPath: join(dir, 'no-such-ov.conf'),
+      },
+      credentials,
+      storePath,
+      fetchImpl: async () => modelsReply(true),
+    })
+    seedPersonal()
+    const added = await offline.endpoints.add({ key: personal })
+    assert.equal(teamItem(added).label, '未命名 ovgw_pers…')
+  })
+
+  it('没配 adminKey 时读插件目录里随包分发的 team-admin.json', async () => {
+    const adminFile = join(dir, `team-admin-${Math.random().toString(36).slice(2)}.json`)
+    writeFileSync(adminFile, JSON.stringify({ adminKey: 'admin-from-file' }))
+    const shipped = createHandlers({
+      config: { credentialRef: 'OPENVIKING_GATEWAY_KEY', gatewayBaseURL: 'http://gw.local/gateway', adminKeysFile: adminFile },
+      credentials,
+      storePath,
+      fetchImpl: async (url, init) => {
+        assert.equal(init.headers.Authorization, 'Bearer admin-from-file')
+        return { ok: true, status: 200, text: async () => JSON.stringify([{ id: createHash('sha256').update(personal).digest('hex'), name: personalName }]) }
+      },
+    })
+    seedPersonal()
+    const added = await shipped.endpoints.add({ key: personal })
+    assert.equal(teamItem(added).label, personalName)
+  })
+
+  it('第一把凭证没权限就顺延下一把，不因为 403 丢掉名字', async () => {
+    const ovConf = join(dir, `ov-${Math.random().toString(36).slice(2)}.conf`)
+    writeFileSync(ovConf, JSON.stringify({ server: { root_api_key: 'root-fallback' } }))
+    const adminFile = join(dir, `team-admin-${Math.random().toString(36).slice(2)}.json`)
+    writeFileSync(adminFile, JSON.stringify({ adminKey: 'team-user-only' }))
+    const seen = []
+    const chained = createHandlers({
+      config: {
+        credentialRef: 'OPENVIKING_GATEWAY_KEY',
+        gatewayBaseURL: 'http://gw.local/gateway',
+        adminKeysFile: adminFile,
+        ovConfPath: ovConf,
+      },
+      credentials,
+      storePath,
+      fetchImpl: async (url, init) => {
+        seen.push(init.headers.Authorization)
+        if (init.headers.Authorization === 'Bearer team-user-only') {
+          return { ok: false, status: 403, text: async () => '{"reason":"forbidden"}' }
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify([{ id: createHash('sha256').update(personal).digest('hex'), name: personalName }]),
+        }
+      },
+    })
+    seedPersonal()
+    const added = await chained.endpoints.add({ key: personal })
+    assert.equal(teamItem(added).label, personalName)
+    assert.deepEqual(seen, ['Bearer team-user-only', 'Bearer root-fallback'])
+  })
+
+  it('取名凭证不出现在 state 与 trace 里', async () => {
+    const adminFile = join(dir, `team-admin-${Math.random().toString(36).slice(2)}.json`)
+    writeFileSync(adminFile, JSON.stringify({ adminKey: 'super-secret-lookup-key' }))
+    const quiet = createHandlers({
+      config: { credentialRef: 'OPENVIKING_GATEWAY_KEY', gatewayBaseURL: 'http://gw.local/gateway', adminKeysFile: adminFile },
+      credentials,
+      storePath,
+      fetchImpl: async () => ({ ok: true, status: 200, text: async () => '[]' }),
+    })
+    const state = await quiet.endpoints.state()
+    assert.equal(JSON.stringify(state).includes('super-secret-lookup-key'), false)
+  })
+
+  it('凭证文件声明成非只读就整份拒绝加载', async () => {
+    const adminFile = join(dir, `team-admin-${Math.random().toString(36).slice(2)}.json`)
+    writeFileSync(adminFile, JSON.stringify({ scope: 'admin', adminKey: 'root-like-key' }))
+    let called = false
+    const guarded = createHandlers({
+      config: {
+        credentialRef: 'OPENVIKING_GATEWAY_KEY',
+        gatewayBaseURL: 'http://gw.local/gateway',
+        adminKeysFile: adminFile,
+        ovConfPath: join(dir, 'no-such-ov.conf'),
+      },
+      credentials,
+      storePath,
+      fetchImpl: async () => {
+        called = true
+        return { ok: true, status: 200, text: async () => '[]' }
+      },
+    })
+    seedPersonal()
+    const added = await guarded.endpoints.add({ key: personal })
+    assert.equal(called, false, '不该拿这把凭证发任何请求')
+    assert.equal(teamItem(added).label, '未命名 ovgw_pers…')
+  })
+
+  it('取名凭证不会随着报错文案漏出去', async () => {
+    const adminFile = join(dir, `team-admin-${Math.random().toString(36).slice(2)}.json`)
+    writeFileSync(adminFile, JSON.stringify({ adminKey: 'leaky-lookup-key' }))
+    const leaky = createHandlers({
+      config: { credentialRef: 'OPENVIKING_GATEWAY_KEY', gatewayBaseURL: 'http://gw.local/gateway', adminKeysFile: adminFile },
+      credentials,
+      storePath,
+      fetchImpl: async (url, init) => {
+        throw new Error('connect failed with ' + init.headers.Authorization)
+      },
+    })
+    seedPersonal()
+    const added = await leaky.endpoints.add({ key: personal })
+    assert.equal(teamItem(added).label, '未命名 ovgw_pers…', '反查失败只降级，不抛错')
+    assert.equal(JSON.stringify(added).includes('leaky-lookup-key'), false)
+  })
+
+  it('加入团队可以直接生效：add({activate:true}) 落盘并切成当前 key', async () => {
+    seedPersonal()
+    const joined = await handlers.endpoints.add({ key: personal, activate: true })
+    assert.equal(joined.activeLabel, personalName, '一进来就是当前 key')
+    assert.equal(teamItem(joined).active, true)
+    assert.deepEqual(credentials.writes.at(-1), ['OPENVIKING_GATEWAY_KEY', personal])
+
+    const again = await handlers.endpoints.add({ key: personal, activate: true })
+    assert.equal(again.items.length, 2, '重复加入不新增条目')
+  })
+
+  it('同一把 key 重复添加不产生重复条目', async () => {
+    seedPersonal()
+    await handlers.endpoints.add({ key: personal })
+    const again = await handlers.endpoints.add({ key: personal })
+    assert.equal(again.items.filter((item) => item.role === 'team').length, 1)
+  })
+
+  it('绑定个人 key：落成 personal 角色、默认切成当前 key、且不允许删掉', async () => {
+    const bound = await handlers.endpoints.bindPersonal({ key: personal })
+    assert.equal(bound.personal.label, personalName)
+    assert.equal(bound.personal.prefix, 'ovgw_pers…')
+    assert.equal(bound.needPersonal, false)
+    assert.equal(bound.items[0].role, 'personal')
+    assert.deepEqual(credentials.writes.at(-1), ['OPENVIKING_GATEWAY_KEY', personal])
+
+    const error = await handlers.endpoints.remove({ id: bound.personal.id }).then(
+      () => null,
+      (caught) => caught,
+    )
+    assert.equal(error?.code, 'PERSONAL_LOCKED', '个人 key 是回流的落点，删掉就不知道同步给谁')
+  })
+
+  it('换绑个人 key：旧的那把降级成普通 team key，不留两个 personal', async () => {
+    const first = await handlers.endpoints.bindPersonal({ key: personal })
+    const second = await handlers.endpoints.bindPersonal({ key: selfKey, activate: false })
+    assert.equal(second.items.filter((item) => item.role === 'personal').length, 1)
+    assert.equal(second.personal.prefix, 'ovgw_self…')
+    assert.equal(second.items.find((item) => item.id === first.personal.id).role, 'team')
+  })
+
+  it('首次安装：provider 里已有的网关 key 自动认作个人 key', async () => {
+    const auto = createHandlers({
+      config: { credentialRef: 'OPENVIKING_GATEWAY_KEY', gatewayBaseURL: 'http://gw.local/gateway', adminKey: 'admin-test' },
+      credentials: fakeCredentials({ OPENVIKING_GATEWAY_KEY: personal }),
+      storePath,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify([{ id: createHash('sha256').update(personal).digest('hex'), name: personalName, user_id: 'alice' }]),
+      }),
+    })
+    const state = await auto.endpoints.state()
+    assert.equal(state.needPersonal, false, '已经自动绑上')
+    assert.equal(state.personal.label, personalName)
+    assert.equal(state.items[0].role, 'personal')
+  })
+
+  it('加入团队后把 (个人 key, 团队 key) 登记给控制台；登记不上就排队等下次', async () => {
+    const calls = []
+    let reachable = true
+    const joined = createHandlers({
+      config: { credentialRef: 'OPENVIKING_GATEWAY_KEY', gatewayBaseURL: 'http://gw.local/gateway', adminKey: 'admin-test', syncBaseURL: 'http://console.local/' },
+      credentials: fakeCredentials({ OPENVIKING_GATEWAY_KEY: personal }),
+      storePath,
+      fetchImpl: async (url, init) => {
+        if (url === 'http://console.local/api/team/join') {
+          if (!reachable) throw new Error('ECONNREFUSED')
+          calls.push(JSON.parse(init.body))
+          return { ok: true, status: 200, text: async () => '{"ok":true}' }
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify([{ id: createHash('sha256').update(personal).digest('hex'), name: personalName, user_id: 'alice' }]),
+        }
+      },
+    })
+    await joined.endpoints.state()
+    const withTeam = await joined.endpoints.add({ key: 'ovgw_team_ttttttttttttttttttt' })
+    assert.equal(withTeam.join.ok, true)
+    assert.deepEqual(calls[0], { personal_key: personal, team_keys: ['ovgw_team_ttttttttttttttttttt'] }, '只送 key，不送别的身份信息')
+    assert.equal(JSON.stringify(withTeam.join).includes(personal), false, '回给 UI 的结果里不能带明文')
+
+    reachable = false
+    const offline = await joined.endpoints.sync()
+    assert.equal(offline.ok, false)
+    assert.equal(offline.pending, true)
+    const queued = await joined.endpoints.state()
+    assert.equal(queued.sync.pending, 1, '排队次数透给 UI，方便提示“回流还没开始”')
+  })
+
+  it('个人 key 与团队 key 可以来回切：点个人那条就回到个人 gateway', async () => {
+    seedPersonal()
+    const joined = await handlers.endpoints.add({ key: personal })
+    const team = teamItem(joined)
+    assert.equal(joined.personal.id, 'k1')
+    assert.equal(joined.items.find((item) => item.role === 'personal').id, 'k1', '个人 key 也在列表里')
+
+    await handlers.endpoints.activate({ id: team.id })
+    assert.deepEqual(credentials.writes.at(-1), ['OPENVIKING_GATEWAY_KEY', personal])
+
+    const back = await handlers.endpoints.activate({ id: 'k1' })
+    assert.deepEqual(credentials.writes.at(-1), ['OPENVIKING_GATEWAY_KEY', selfKey], '再点个人那条就切回个人 gateway')
+    assert.equal(back.items.find((item) => item.role === 'personal').active, true)
+    assert.equal(back.items.find((item) => item.role === 'team').active, false)
+    assert.equal(back.personal.id, 'k1', '个人身份不因为切走而丢失')
+  })
+
+  it('add 拒绝空值与空白', async () => {
+    await assert.rejects(() => handlers.endpoints.add({ key: '' }), /太短/)
+    await assert.rejects(() => handlers.endpoints.add({ key: 'ovgw_a b c d e f g h' }), /空白/)
+  })
+
+  it('state 带上记忆状态：插件在 profile 里就读 ovcli.conf 的身份', async () => {
+    const profile = join(dir, `profile-${Math.random().toString(36).slice(2)}`)
+    mkdirSync(profile, { recursive: true })
+    writeFileSync(
+      join(profile, 'package.json'),
+      JSON.stringify({ dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@openviking/dsh-memory-plugin'] } } }),
+      'utf8',
+    )
+    const ovcli = join(dir, `ovcli-${Math.random().toString(36).slice(2)}.conf`)
+    writeFileSync(ovcli, JSON.stringify({ api_key: 'ZGVtbw.YWxpY2U.c2ln' }), 'utf8')
+
+    const local = createHandlers({ config: { profileDir: profile, ovcliPath: ovcli }, credentials, storePath })
+    const state = await local.endpoints.state()
+    assert.equal(state.memory.mode, 'plugin')
+    assert.equal(state.memory.user, 'alice')
+
+    writeFileSync(
+      join(profile, 'package.json'),
+      JSON.stringify({ dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'] } } }),
+      'utf8',
+    )
+    const afterRemoval = await local.endpoints.state()
+    assert.equal(afterRemoval.memory.mode, 'gateway', '插件被摘掉后改为网关归属')
+  })
+
+  it('probe 探网关 /v1/models 并数出模型数', async () => {
+    const result = await handlers.endpoints.probe({})
+    assert.deepEqual(result, { ok: true, status: 200, modelCount: 2, detail: '网关可用，返回 2 个模型' })
+  })
+
+  it('probe 在没有密钥时给明确提示而不是抛错', async () => {
+    const empty = createHandlers({ credentials: fakeCredentials(), storePath })
+    const result = await empty.endpoints.probe({})
+    assert.equal(result.ok, false)
+    assert.match(result.detail, /还没有配置/)
+  })
+
+  it('handle 用返回值表达失败，绝不把异常抛给传输层', async () => {
+    const unknown = await handlers.handle('nope', {})
+    assert.equal(unknown.ok, false)
+    assert.equal(unknown.error.code, 'not-found')
+
+    const bad = await handlers.handle('activate', { id: 'k404' })
+    assert.equal(bad.ok, false)
+    assert.equal(bad.error.code, 'bad-request')
+    assert.match(bad.error.message, /没有这个密钥/)
+
+    const ok = await handlers.handle('state', {})
+    assert.equal(ok.ok, true)
+    assert.equal(ok.value.configured, true)
+  })
+
+  it('原型链上的名字不会被当成 endpoint', async () => {
+    const result = await handlers.handle('constructor', {})
+    assert.equal(result.ok, false)
+    assert.equal(result.error.code, 'not-found')
+  })
+
+  it('trace 把客户端上报追加到同目录 trace.log，且不泄漏密钥', async () => {
+    const ok = await handlers.handle('trace', { tag: 'client:render', extra: 'conversation.composer.dock' })
+    assert.equal(ok.ok, true)
+    assert.equal(ok.value.logged, true)
+
+    const logPath = join(dir, 'trace.log')
+    const lines = readFileSync(logPath, 'utf8').trim().split('\n')
+    assert.equal(lines.length, 1)
+    const entry = JSON.parse(lines[0])
+    assert.equal(entry.tag, 'client:render')
+    assert.equal(entry.extra, 'conversation.composer.dock')
+    assert.ok(entry.at, '要带时间戳')
+
+    await handlers.handle('trace', { tag: 'second' })
+    const after = readFileSync(logPath, 'utf8').trim().split('\n')
+    assert.equal(after.length, 2, '追加而不是覆盖')
+    assert.doesNotMatch(readFileSync(logPath, 'utf8'), /ovgw_current/, 'trace 里不能出现密钥')
+  })
+})

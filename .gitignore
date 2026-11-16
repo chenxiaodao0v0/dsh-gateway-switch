@@ -1,0 +1,10 @@
+# 含真实网关管理 key，绝不入库
+team-admin.json
+
+# 打包产物 / 依赖
+node_modules/
+*.tgz
+
+# 系统
+.DS_Store
+Thumbs.db

@@ -1,0 +1,43 @@
+{
+  "name": "dsh-plugin-gateway-switch",
+  "version": "0.2.0",
+  "private": true,
+  "description": "DSH 插件：在「设置 → 插件 → 网关密钥」里一键切换 OpenViking Gateway Key，切换后下一次请求立即生效",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "openviking",
+    "gateway",
+    "key"
+  ],
+  "license": "MIT"
+}
