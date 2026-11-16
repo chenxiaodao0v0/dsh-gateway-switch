@@ -124,17 +124,10 @@ dsh plugin --profile desktop add git+https://<gitlab-host>/<group>/dsh-gateway-s
 或桌面端 **设置 → 插件 → 安装第三方插件**，把上面的 git 地址粘进输入框。
 DSH 会把它装进 `profiles/desktop/node_modules`，并自动加进 `dsh.profile.bundles`（即自动启用）。
 
-唯一的配置项是控制台 token，用环境变量注入，不要写进任何文件：
-
-```powershell
-# 当前窗口临时生效
-$env:DSH_SYNC_TOKEN = "<控制台 token>"
-# 永久生效（用户级）
-[Environment]::SetEnvironmentVariable("DSH_SYNC_TOKEN", "<控制台 token>", "User")
-```
-
-控制台地址已内置在包内 `cordis.patch.yml`（团队默认 `http://192.168.10.4:8765`），
-需要换地址时用 `DSH_SYNC_URL` 覆盖。装完**重启一次 DSH**。
+**装完不需要填任何配置**：控制台地址已内置在包内 `cordis.patch.yml`（团队默认
+`http://192.168.10.4:8765`，需要换地址时用环境变量 `DSH_SYNC_URL` 覆盖），
+登记回流也不需要控制台 token —— `/api/team/join` 只认「你贴的 key 能反查到本账号的用户」，
+控制台其余接口仍然要 token，但不对外发放。装完**重启一次 DSH** 即可。
 
 私服/私有仓库要凭据时，git 地址可以带 token 或改用 ssh：
 `git+https://oauth2:<PAT>@<gitlab-host>/...`、`git+ssh://git@<gitlab-host>:22/...`。
@@ -264,6 +257,7 @@ node scripts/install.mjs --profile "$env:USERPROFILE\.dsh\profiles\desktop" --ad
 | 明文回传界面？ | 不回传。`state` 只给前 9 字符掩码；添加接口是单向写入 |
 | 日志 | 不打密钥 |
 | 凭据写入 | 走官方 `ctx.credentials.set()`，不手工改 `.credentials.yaml` |
+| 控制台 token | **不下发给成员**。插件只调一个免 token 的 `/api/team/join`，身份由 key 反查保证；控制台其余接口仍要 token，只有管理员持有 |
 
 注意：`keys.json` 与 DSH 自己的 `.credentials.yaml` 一样是**本机明文**文件，请按敏感文件对待（不要提交到 git）。
 
