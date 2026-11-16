@@ -402,6 +402,32 @@ describe('createHandlers', () => {
     assert.equal(queued.sync.pending, 1, '排队次数透给 UI，方便提示“回流还没开始”')
   })
 
+  it('加入团队后用控制台认下的团队名当标签（成员机器上没有 admin 凭证）', async () => {
+    writeFileSync(storePath, JSON.stringify({
+      nextId: 2, personalId: 'k1', pendingJoins: [],
+      items: [{ id: 'k1', label: '未命名 ovgw_self…', key: selfKey, role: 'personal' }],
+    }))
+    const teamKey = 'ovgw_team_kkkkkkkkkkkkkkkkkkk'
+    const joined = createHandlers({
+      config: { credentialRef: 'OPENVIKING_GATEWAY_KEY', gatewayBaseURL: 'http://gw.local/gateway', adminKey: 'admin-test', syncBaseURL: 'http://console.local/' },
+      credentials: fakeCredentials({ OPENVIKING_GATEWAY_KEY: selfKey }),
+      storePath,
+      fetchImpl: async (url) => {
+        if (url === 'http://console.local/api/team/join') {
+          const keyId = createHash('sha256').update(teamKey).digest('hex').slice(0, 16)
+          const body = { ok: true, teams: [{ team_id: 'rd-team', name: '研发团队', key_id: keyId, added: true }], missing: [], personal_label: '本人 · 本地默认客户端' }
+          return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+        }
+        return { ok: false, status: 403, text: async () => '{"error":"forbidden"}' }
+      },
+    })
+    await joined.endpoints.state()
+    const after = await joined.endpoints.add({ key: teamKey })
+    const team = after.items.find((item) => item.role === 'team')
+    assert.equal(team.label, '研发团队', '标签来自控制台认下的团队名，而不是掩码')
+    assert.equal(after.personal.label, '本人 · 本地默认客户端', '个人 key 的掩码标签也用控制台给的名字补上')
+  })
+
   it('个人 key 与团队 key 可以来回切：点个人那条就回到个人 gateway', async () => {
     seedPersonal()
     const joined = await handlers.endpoints.add({ key: personal })

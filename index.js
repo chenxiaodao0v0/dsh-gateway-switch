@@ -397,10 +397,17 @@ export function createHandlers({ config = {}, credentials, storePath, fetchImpl 
         signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(8000) : undefined,
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      let body = {}
+      try {
+        body = await response.json()
+      } catch {
+        body = {}
+      }
       const fresh = readStore(file)
       fresh.pendingJoins = []
       writeStore(file, fresh)
-      return { ok: true }
+      // teams/missing 只带团队名与指纹，不带 key；插件据此把标签改成团队名
+      return { ok: true, teams: body.teams || [], missing: body.missing || [], personalLabel: body.personal_label || '' }
     } catch (error) {
       const fresh = readStore(file)
       fresh.pendingJoins = [...fresh.pendingJoins, { at: Date.now(), reason: String(error?.message ?? error).slice(0, 200) }].slice(-20)
@@ -454,6 +461,36 @@ export function createHandlers({ config = {}, credentials, storePath, fetchImpl 
     return state()
   }
 
+  /**
+   * 用控制台认下的团队名改写标签：成员机器上没有网关 admin 凭证，
+   * `/admin/keys` 反查必然失败，团队名只能从 join 结果里拿。
+   */
+  function applyJoinNames(join) {
+    const teams = join && Array.isArray(join.teams) ? join.teams : []
+    if (!teams.length) return
+    const store = readStore(file)
+    let changed = false
+    for (const team of teams) {
+      const keyId = String((team && team.key_id) || '')
+      const name = String((team && team.name) || '')
+      if (!keyId || !name) continue
+      const entry = store.items.find((item) => item.role !== 'personal'
+        && createHash('sha256').update(item.key).digest('hex').slice(0, 16) === keyId)
+      if (entry && entry.label !== name) {
+        entry.label = name
+        changed = true
+      }
+    }
+    // 个人 key 同理：成员机器上反查不到名字时是掩码，用控制台给的名字补上
+    const personalLabel = String(join.personalLabel || '')
+    const personal = personalItem(store)
+    if (personal && personalLabel && personal.label.startsWith('未命名')) {
+      personal.label = personalLabel
+      changed = true
+    }
+    if (changed) writeStore(file, store)
+  }
+
   async function add(payload = {}) {
     const key = String(payload.key || '').trim()
     if (key.length < 8) throw new Error('密钥看起来太短，请粘贴完整的 Gateway Key')
@@ -478,7 +515,10 @@ export function createHandlers({ config = {}, credentials, storePath, fetchImpl 
     writeStore(file, store)
     if (payload.activate) await credentials.set(credentialRef, key)
     const join = await registerJoin()
-    if (join) return { ...(await state()), join }
+    if (join) {
+      applyJoinNames(join)
+      return { ...(await state()), join }
+    }
     return state()
   }
 
