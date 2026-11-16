@@ -368,6 +368,24 @@ describe('createHandlers', () => {
     assert.equal(state.items[0].role, 'personal')
   })
 
+  it('成员机器没有网关 admin 凭证时，改由控制台反查名字并自动认领', async () => {
+    const auto = createHandlers({
+      config: { credentialRef: 'OPENVIKING_GATEWAY_KEY', gatewayBaseURL: 'http://gw.local/gateway', syncBaseURL: 'http://console.local/' },
+      credentials: fakeCredentials({ OPENVIKING_GATEWAY_KEY: personal }),
+      storePath,
+      fetchImpl: async (url) => {
+        if (url === 'http://console.local/api/identity/resolve') {
+          return { ok: true, status: 200, json: async () => ({ items: [{ fingerprint: 'x', name: personalName, user_id: 'alice' }] }) }
+        }
+        // 网关管理接口拿不到（成员机器没有 admin 凭证 / 没有 root key）
+        return { ok: false, status: 403, text: async () => '{"error":"forbidden"}' }
+      },
+    })
+    const state = await auto.endpoints.state()
+    assert.equal(state.needPersonal, false, '控制台反查成功就能自动认领')
+    assert.equal(state.personal.label, personalName, '名字来自控制台，不是掩码')
+  })
+
   it('加入团队后把 (个人 key, 团队 key) 登记给控制台；登记不上就排队等下次', async () => {
     const calls = []
     let reachable = true

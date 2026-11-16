@@ -263,6 +263,35 @@ export function createHandlers({ config = {}, credentials, storePath, fetchImpl 
    * 按 key 反查它在网关里的名字（`name` 字段，如「研发团队」）。
    * 管理接口按 `sha256(key)` 存 id，命中即精确；解析不出来返回 null，由调用方降级成掩码。
    */
+  /**
+   * 控制台的身份反查：成员机器上没有网关 admin 凭证，但控制台有。
+   * `POST {syncBaseURL}/api/identity/resolve` 只回名字与 user_id，不回 key 本身。
+   */
+  async function consoleIdentity(key) {
+    if (!syncBaseURL) return null
+    try {
+      const response = await doFetch(`${syncBaseURL}/api/identity/resolve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(syncToken ? { 'X-Console-Token': syncToken } : {}),
+        },
+        body: JSON.stringify({ keys: [key] }),
+        signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(8000) : undefined,
+      })
+      if (!response.ok) return null
+      const body = await response.json()
+      const item = Array.isArray(body && body.items) ? body.items[0] : null
+      if (!item) return null
+      const name = typeof item.name === 'string' ? item.name.trim() : ''
+      const userId = typeof item.user_id === 'string' ? item.user_id.trim() : ''
+      if (!name && !userId) return null
+      return { name, userId }
+    } catch {
+      return null
+    }
+  }
+
   async function resolveKeyName(key) {
     const digest = createHash('sha256').update(key).digest('hex')
     if (keyNames.has(digest)) return keyNames.get(digest)
@@ -279,6 +308,11 @@ export function createHandlers({ config = {}, credentials, storePath, fetchImpl 
       if (!name) continue
       keyNames.set(digest, name)
       return name
+    }
+    const consoleHit = await consoleIdentity(key)
+    if (consoleHit && consoleHit.name) {
+      keyNames.set(digest, consoleHit.name)
+      return consoleHit.name
     }
     return null
   }
@@ -304,7 +338,7 @@ export function createHandlers({ config = {}, credentials, storePath, fetchImpl 
         }
       }
     }
-    return null
+    return consoleIdentity(key)
   }
 
   function personalItem(store) {

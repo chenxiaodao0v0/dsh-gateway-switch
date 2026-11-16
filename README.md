@@ -88,7 +88,9 @@
 登记不上（控制台没开、团队还没建）不阻塞使用，插件把这次登记排队，下次打开面板自动重试；
 面板上会写「回流登记待确认」。
 
-`网关` 那枚显示的是**网关侧给这把 key 起的名字**（例如 `研发团队`、`陈嘉帅 · 本地默认客户端`），
+`网关` 那枚显示的是**这把 key 的名字**：优先用网关侧起的名字；成员机器上没有网关管理凭证，
+就改由控制台 `/api/identity/resolve` 反查（名字+user_id，不回 key）。加入团队成功后，
+标签还会被换成控制台里这个团队的正式名字。原始说明：（例如 `研发团队`、`陈嘉帅 · 本地默认客户端`），
 不是自己填的别名：插件拿 `sha256(key)` 去 `/gateway/admin/keys` 精确匹配后取 `name`，查不到才退回掩码。
 所以成员加入团队只需要把 key 粘进设置页，不用起名——名字在签发时就定好了。
 
@@ -257,7 +259,7 @@ node scripts/install.mjs --profile "$env:USERPROFILE\.dsh\profiles\desktop" --ad
 | 明文回传界面？ | 不回传。`state` 只给前 9 字符掩码；添加接口是单向写入 |
 | 日志 | 不打密钥 |
 | 凭据写入 | 走官方 `ctx.credentials.set()`，不手工改 `.credentials.yaml` |
-| 控制台 token | **不下发给成员**。插件只调一个免 token 的 `/api/team/join`，身份由 key 反查保证；控制台其余接口仍要 token，只有管理员持有 |
+| 控制台 token | **不下发给成员**。插件只用两个免 token 的接口：`/api/team/join`（登记回流）和 `/api/identity/resolve`（把 key 换成名字）；两者都只认「你贴的 key 在账号里」，且都不回 key 本身。控制台其余接口仍要 token，只有管理员持有 |
 
 注意：`keys.json` 与 DSH 自己的 `.credentials.yaml` 一样是**本机明文**文件，请按敏感文件对待（不要提交到 git）。
 
