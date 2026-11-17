@@ -114,7 +114,27 @@ DSH 的凭据 seam 规定消费方**按操作解析**密钥，没有跨请求缓
 
 ## 安装
 
-### 方式零：从团队 GitLab 安装（团队统一走这条）
+### 方式零（推荐）：从 GitHub 安装（公开仓库，零配置）
+
+桌面端 **设置 → 插件 → 添加插件**，输入框填：
+
+```text
+https://github.com/chenxiaodao0v0/dsh-gateway-switch
+```
+
+或命令行：
+
+```powershell
+dsh plugin --profile desktop add https://github.com/chenxiaodao0v0/dsh-gateway-switch
+```
+
+装完**重启一次 DSH**。不需要 GitHub 账号、不需要配 SSH key、不需要控制台 token。
+`.git` 后缀可加可不加，两种写法 pnpm 都能解析（实测 pnpm 11.28.5）。
+
+注意：插件同步的目标控制台默认是 `http://192.168.10.4:8765`，所以**同事需要能访问这台内网机器**；
+装上了但加团队失败，通常是这个原因，可用环境变量 `DSH_SYNC_URL` 换成自己的控制台地址。
+
+### 方式一：从内网 GitLab 安装（内网镜像）
 
 插件自己声明了 `dsh.bundle.patch`，所以用 DSH 自带的插件安装通道就能装，不需要拷文件、不需要改 package.json：
 
@@ -134,7 +154,7 @@ DSH 会把它装进 `profiles/desktop/node_modules`，并自动加进 `dsh.profi
 私服/私有仓库要凭据时，git 地址可以带 token 或改用 ssh：
 `git+https://oauth2:<PAT>@<gitlab-host>/...`、`git+ssh://git@<gitlab-host>:22/...`。
 
-### 方式一：脚本（本地开发自测用）
+### 方式二：脚本（本地开发自测用）
 
 ```powershell
 # 装进当前 DSH profile（读 DSH_PROFILE_DIR 环境变量）
