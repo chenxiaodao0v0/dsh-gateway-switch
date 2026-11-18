@@ -176,6 +176,68 @@ describe('createHandlers', () => {
     await assert.rejects(() => handlers.endpoints.remove({ id: team.id }), /没有这个密钥/)
   })
 
+  /** 退出团队需要一个配了 syncBaseURL 的 handlers（该值在 createHandlers 时读取）。 */
+  const consoleHandlers = (consoleFetch) =>
+    createHandlers({
+      config: {
+        credentialRef: 'OPENVIKING_GATEWAY_KEY',
+        gatewayBaseURL: 'http://gw.local/gateway/',
+        adminKey: 'admin-test',
+        syncBaseURL: 'http://console.local',
+      },
+      credentials,
+      storePath,
+      fetchImpl: async (url, init) => {
+        if (String(url).startsWith('http://gw.local/gateway/admin/keys')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ keys: [{ id: 'x', name: '团队', user_id: 'TeamRD', prefix: 'ovgw_team' }] }),
+            text: async () => '{}',
+          }
+        }
+        return consoleFetch(url, init)
+      },
+    })
+
+  it('删除团队 key = 退出团队：会先通知控制台清理', async () => {
+    seedPersonal()
+    const calls = []
+    const leaving = consoleHandlers(async (url, init) => {
+      calls.push({ url: String(url), body: JSON.parse(init.body) })
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ personal_user: 'alice', teams: [{ team_id: 'rd-team', name: 'x', removed_copies: 7 }], missing: [] }),
+        text: async () => '{}',
+      }
+    })
+    const added = await leaving.endpoints.add({ key: 'ovgw_temp_dddddddddddddddddddd' })
+    const team = teamItem(added)
+
+    const removed = await leaving.endpoints.remove({ id: team.id })
+    assert.equal(removed.items.length, 1, '本地团队 key 已删除')
+    assert.equal(removed.leave?.ok, true, '退出结果带回 UI')
+    assert.equal(removed.leave.removedCopies, 7, '带回清理了多少份副本')
+    const leaveCall = calls.find((call) => call.url.endsWith('/api/team/leave'))
+    assert.ok(leaveCall, '必须调用 /api/team/leave')
+    assert.equal(leaveCall.body.team_keys.length, 1)
+    assert.match(leaveCall.body.personal_key, /^ovgw_/, '用个人 key 表明身份')
+  })
+
+  it('控制台不可达时仍能删掉本地团队 key，并把失败原因带回', async () => {
+    seedPersonal()
+    const leaving = consoleHandlers(async () => {
+      throw new Error('connect ECONNREFUSED')
+    })
+    const added = await leaving.endpoints.add({ key: 'ovgw_temp_eeeeeeeeeeeeeeeeeeee' })
+    const team = teamItem(added)
+    const removed = await leaving.endpoints.remove({ id: team.id })
+    assert.equal(removed.items.length, 1, '本地记录照样清掉，避免卡住用户')
+    assert.equal(removed.leave?.ok, false, '拿不到控制台时要明确回报失败')
+    assert.ok(String(removed.leave?.reason || '').length > 0, '失败原因不能是空字符串')
+  })
+
   it('没绑个人 key 就加团队 key：明确拒绝，而不是默默收下', async () => {
     const error = await handlers.endpoints.add({ key: personal }).then(
       () => null,

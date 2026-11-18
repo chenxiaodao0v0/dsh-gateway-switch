@@ -322,12 +322,27 @@ window.__ModuleLoader__.load({
                       disabled: Boolean(busy),
                       onClick: () => {
                         setPendingRemove('')
-                        run('remove', { id: item.id }, '已删除该条目（若它正生效，当前值不会被清掉）。')
+                        run(
+                          'remove',
+                          { id: item.id },
+                          item.role === 'personal'
+                            ? '已删除该条目（若它正生效，当前值不会被清掉）。'
+                            : '已退出团队：本地 key 已移除，成员关系与团队副本由控制台清理。',
+                        )
                       },
                     },
-                    '确认删除',
+                    item.role === 'personal' ? '确认删除' : '确认退出',
                   )
-                : h('button', { type: 'button', style: S.button(), disabled: Boolean(busy), onClick: () => setPendingRemove(item.id) }, '删除'),
+                : h(
+                    'button',
+                    {
+                      type: 'button',
+                      style: S.button(item.role === 'personal' ? undefined : 'danger'),
+                      disabled: Boolean(busy),
+                      onClick: () => setPendingRemove(item.id),
+                    },
+                    item.role === 'personal' ? '删除' : '退出团队',
+                  ),
               probes[item.id] ? h('span', { style: S.mono }, probes[item.id].ok ? '✓ ' + probes[item.id].modelCount + ' 模型' : '✗ ' + probes[item.id].detail) : null,
             ),
           )

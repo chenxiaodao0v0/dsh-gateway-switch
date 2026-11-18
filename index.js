@@ -556,18 +556,54 @@ export function createHandlers({ config = {}, credentials, storePath, fetchImpl 
     return state()
   }
 
+  /**
+   * 退出一个团队：先让控制台把「成员关系 + 你已经拿到的团队副本」清掉，再删本地这把团队 key。
+   * 控制台不可达时只删本地 key，并把失败原因带回 UI（不阻塞切换，也不会偷偷留着团队关系）。
+   */
+  async function leaveTeam(teamKey) {
+    if (!syncBaseURL) return { ok: false, reason: '没有配置控制台地址，只清理了本地记录' }
+    const personal = personalItem(readStore(file))
+    if (!personal) return { ok: false, reason: '缺少个人 key，控制台无法确认你的身份' }
+    try {
+      const response = await doFetch(`${syncBaseURL}/api/team/leave`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(syncToken ? { 'X-Console-Token': syncToken } : {}),
+        },
+        body: JSON.stringify({ personal_key: personal.key, team_keys: [teamKey] }),
+        signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(15000) : undefined,
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      let body = {}
+      try {
+        body = await response.json()
+      } catch {
+        body = {}
+      }
+      const teams = Array.isArray(body.teams) ? body.teams : []
+      const removed = teams.reduce((sum, item) => sum + (Number(item.removed_copies) || 0), 0)
+      return { ok: true, teams, removedCopies: removed, missing: body.missing || [] }
+    } catch (error) {
+      return { ok: false, reason: String(error?.message ?? error).slice(0, 200) }
+    }
+  }
+
   async function remove(payload = {}) {
     const store = readStore(file)
     const index = store.items.findIndex(entry => entry.id === payload.id)
     if (index < 0) throw new Error(`没有这个密钥：${payload.id}`)
-    if (store.items[index].role === 'personal' && !payload.force) {
+    const item = store.items[index]
+    if (item.role === 'personal' && !payload.force) {
       const error = new Error('这是你的个人密钥，删掉就不知道回流到哪了；要换绑请直接绑定新的')
       error.code = 'PERSONAL_LOCKED'
       throw error
     }
+    // 团队 key = 退出团队：先通知控制台清理成员关系与副本，再删本地记录
+    const leave = item.role === 'personal' ? null : await leaveTeam(item.key)
     store.items.splice(index, 1)
     writeStore(file, store)
-    return state()
+    return { ...(await state()), leave }
   }
 
   /** 用某把密钥探一次网关 /v1/models：只回报状态码与模型数，不回传响应体。 */
