@@ -77,20 +77,20 @@ describe('memoryStatus', () => {
   })
 })
 
-describe('apply: RPC channel registration', () => {
-  it('在 /api 共享通道上认领 gateway-switch 命名空间，并把 endpoint 映射回动作名', async () => {
+describe('apply: RPC route registration', () => {
+  it('在 /api 共享通道上注册精确 Fetch 路由，并把请求映射回动作名', async () => {
     const { apply } = await import('../index.js')
-    let captured
+    const routes = []
     const ctx = {
       credentials: fakeCredentials(),
       logger: { warn: () => {} },
       inject: (_names, run) => run({
         root: {
           connection: {
-            rpc: {
-              intercept: (channel, matches, handler) => {
-                captured = { channel, matches, handler, dispose: () => {} }
-                return () => {}
+            fetch: {
+              register: (route) => {
+                routes.push(route)
+                return () => Promise.resolve()
               },
             },
           },
@@ -99,20 +99,49 @@ describe('apply: RPC channel registration', () => {
       }),
     }
     apply(ctx, {})
-    assert.ok(captured, '应当注册一个 intercept')
-    assert.equal(captured.channel, '/api', 'DSH 0.2.2+ 必须走共享 /api 通道')
 
-    // 认领范围：自己的命名空间（含其子路径），不认领别人的
-    assert.equal(captured.matches('gateway-switch'), true)
-    assert.equal(captured.matches('gateway-switch/state'), true)
-    assert.equal(captured.matches('gateway-switch/activate'), true)
-    assert.equal(captured.matches('other-plugin/state'), false)
-    assert.equal(captured.matches('gateway-switchx/state'), false)
+    // 每个动作一条精确路由，全部挂在 /api 下
+    assert.equal(routes.length, 8, '应为 8 个动作各注册一条路由')
+    for (const route of routes) {
+      assert.match(route.path, /^\/api\/gateway-switch\/[A-Za-z]+$/, '路径必须在 /api/gateway-switch 下')
+      assert.deepEqual(route.methods, ['POST'], '只认 POST')
+      assert.equal(route.requestBody, 'buffered')
+      assert.equal(typeof route.fetch, 'function')
+    }
+    const state = routes.find(r => r.path === '/api/gateway-switch/state')
+    assert.ok(state, 'state 路由必须存在')
 
-    // 路由映射：/api/gateway-switch/state → endpoint 'state'
-    const result = await captured.handler('gateway-switch/state', {})
-    assert.equal(result.ok, true)
-    assert.ok(result.value && typeof result.value === 'object', 'state 应返回状态对象')
+    // 请求 envelope → handler 结果 → server-response envelope
+    const response = await state.fetch(new Request('http://dsh.internal/api/gateway-switch/state', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-request', rpcId: 'r-1', method: 'state', payload: {} }),
+    }))
+    assert.equal(response.status, 200)
+    const body = await response.json()
+    assert.equal(body.type, 'server-response')
+    assert.equal(body.rpcId, 'r-1', 'rpcId 必须回显')
+    assert.equal(body.result.ok, true)
+    assert.ok(body.result.value && typeof body.result.value === 'object')
+
+    // 非法 JSON → 400
+    const bad = await state.fetch(new Request('http://dsh.internal/api/gateway-switch/state', {
+      method: 'POST', body: 'not json',
+    }))
+    assert.equal(bad.status, 400)
+  })
+
+  it('宿主没有 connection.fetch.register 时不崩，只告警', async () => {
+    const { apply } = await import('../index.js')
+    const warnings = []
+    const ctx = {
+      credentials: fakeCredentials(),
+      logger: { warn: (m) => warnings.push(m) },
+      inject: (_names, run) => run({ root: { connection: {} }, effect: (f) => f() }),
+    }
+    assert.doesNotThrow(() => apply(ctx, {}))
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /connection\.fetch\.register/)
   })
 })
 

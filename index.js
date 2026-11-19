@@ -695,25 +695,60 @@ export function createHandlers({ config = {}, credentials, storePath, fetchImpl 
   return { credentialRef, gatewayBaseURL, handle, endpoints }
 }
 
+/** 客户端可调的动作名；每个动作注册一条精确 Fetch 路由。 */
+const RPC_ENDPOINTS = ['state', 'activate', 'add', 'bindPersonal', 'remove', 'probe', 'sync', 'trace']
+
+/**
+ * 造一条共享 /api 通道上的精确 Fetch 路由：POST /api/gateway-switch/<endpoint>。
+ *
+ * 为什么不用 rpc.intercept：`/api` 通道的 interceptor 是单例，已由 @deepseek-ai/dsh-api-gateway
+ * 独占（重复注册会抛错），插件只能注册"精确路由"。精确路由只对 owner Peer 开放（浏览器即 owner）。
+ */
+function rpcRoute(endpoint, handlers) {
+  return {
+    path: `${API_CHANNEL}/${RPC_NAMESPACE}/${endpoint}`,
+    methods: ['POST'],
+    requestBody: 'buffered',
+    async fetch(request) {
+      let body
+      try {
+        body = await request.json()
+      } catch {
+        return new Response('body is not JSON', { status: 400 })
+      }
+      const rpcId = typeof body?.rpcId === 'string' ? body.rpcId : 'unknown'
+      let result
+      try {
+        result = await handlers.handle(endpoint, body?.payload === undefined ? {} : body.payload)
+      } catch (error) {
+        result = { ok: false, error: { code: 'bad-request', message: String(error?.message ?? error), details: {} } }
+      }
+      // 与 Connection 的 server-response envelope 保持一致
+      return Response.json({ type: 'server-response', rpcId, result })
+    },
+  }
+}
+
 export function apply(ctx, config = {}) {
   const handlers = createHandlers({ config, credentials: ctx.credentials })
 
-  // DSH 0.2.2 起，插件不再注册私有 RPC 通道（私有 prefix 路由对 POST 会落到静态资源兜底而返回 405），
-  // 改为在共享的 /api 通道上用 intercept 认领自己的 endpoint：URL /api/gateway-switch/<endpoint>。
+  // DSH 0.2.2+ 的插件 RPC 方式：在共享 /api 通道上注册精确 Fetch 路由。
+  // （私有通道 rpc.handle 对 POST 会落到静态兜底返回 405；rpc.intercept 的 /api 单例已被 api-gateway 占用。）
   ctx.inject(['connection'], connectionCtx => {
     const connection = connectionCtx.root.connection
-    if (!connection?.rpc?.intercept) {
-      ctx.logger?.warn?.('gateway-switch: 宿主没有 connection.rpc.intercept，设置页的切换通道不可用')
+    const register = connection?.fetch?.register
+    if (typeof register !== 'function') {
+      ctx.logger?.warn?.('gateway-switch: 宿主没有 connection.fetch.register，设置页的切换通道不可用')
       return
     }
     connectionCtx.effect(
-      () => connection.rpc.intercept(
-        API_CHANNEL,
-        endpoint => typeof endpoint === 'string'
-          && (endpoint === RPC_NAMESPACE || endpoint.startsWith(RPC_NAMESPACE + '/')),
-        (endpoint, payload) => handlers.handle(String(endpoint).slice(RPC_NAMESPACE.length + 1), payload),
-      ),
-      'gateway-switch: settings rpc channel',
+      () => {
+        const disposers = RPC_ENDPOINTS.map(name => register(rpcRoute(name, handlers)))
+        return async () => {
+          await Promise.all(disposers.map(dispose => Promise.resolve().then(() => dispose())))
+        }
+      },
+      'gateway-switch: settings rpc routes',
     )
   })
 }

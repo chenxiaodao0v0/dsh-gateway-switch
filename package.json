@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-gateway-switch",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "DSH 插件：在「设置 → 插件 → 网关密钥」里一键切换 OpenViking Gateway Key，切换后下一次请求立即生效",
   "type": "module",

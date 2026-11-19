@@ -6,11 +6,12 @@
 
 ---
 
-> **DSH 0.2.2+ 兼容说明**：从 0.2.3 起，插件改用共享 `/api` RPC 通道
-> （`connection.rpc.intercept('/api', ...)`，URL 形如 `/api/gateway-switch/state`）。
-> 旧版插件用私有通道 `/gateway-switch` 注册，在 DSH 0.2.2+ 上会报
-> `transport failure for /gateway-switch/state: HTTP 405`（私有 prefix 路由对 POST
-> 会落到静态资源兜底）。升级到 0.2.3 即可修复；`engines.dsh` 声明 `>=0.2.2-rc.5`（注意：semver 里 `0.2.2-rc.5 < 0.2.2`，
+> **DSH 0.2.2+ 兼容说明**：0.2.5 起插件在共享 `/api` 通道上注册**精确 Fetch 路由**
+> （`connection.fetch.register`，URL 形如 `/api/gateway-switch/state`）。
+> 演进过程：旧版私有通道 `/gateway-switch` 在 0.2.2+ 上对 POST 返回 **405**
+> （私有 prefix 路由落到静态兜底）；改用 `rpc.intercept('/api', ...)` 会返回 **404**
+> （该通道的 interceptor 是单例，已被 `@deepseek-ai/dsh-api-gateway` 独占）。
+> 精确 Fetch 路由是官方给宿主特性的口子，仅 owner Peer（浏览器）可达。升级到 0.2.5；`engines.dsh` 声明 `>=0.2.2-rc.5`（注意：semver 里 `0.2.2-rc.5 < 0.2.2`，
 > 写成 `>=0.2.2` 会把当前所有 rc 版本判成不兼容）。
 
 ## 它长什么样
