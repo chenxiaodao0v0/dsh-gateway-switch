@@ -77,6 +77,45 @@ describe('memoryStatus', () => {
   })
 })
 
+describe('apply: RPC channel registration', () => {
+  it('在 /api 共享通道上认领 gateway-switch 命名空间，并把 endpoint 映射回动作名', async () => {
+    const { apply } = await import('../index.js')
+    let captured
+    const ctx = {
+      credentials: fakeCredentials(),
+      logger: { warn: () => {} },
+      inject: (_names, run) => run({
+        root: {
+          connection: {
+            rpc: {
+              intercept: (channel, matches, handler) => {
+                captured = { channel, matches, handler, dispose: () => {} }
+                return () => {}
+              },
+            },
+          },
+        },
+        effect: (factory) => factory(),
+      }),
+    }
+    apply(ctx, {})
+    assert.ok(captured, '应当注册一个 intercept')
+    assert.equal(captured.channel, '/api', 'DSH 0.2.2+ 必须走共享 /api 通道')
+
+    // 认领范围：自己的命名空间（含其子路径），不认领别人的
+    assert.equal(captured.matches('gateway-switch'), true)
+    assert.equal(captured.matches('gateway-switch/state'), true)
+    assert.equal(captured.matches('gateway-switch/activate'), true)
+    assert.equal(captured.matches('other-plugin/state'), false)
+    assert.equal(captured.matches('gateway-switchx/state'), false)
+
+    // 路由映射：/api/gateway-switch/state → endpoint 'state'
+    const result = await captured.handler('gateway-switch/state', {})
+    assert.equal(result.ok, true)
+    assert.ok(result.value && typeof result.value === 'object', 'state 应返回状态对象')
+  })
+})
+
 describe('createHandlers', () => {
   const personal = 'ovgw_personal_bbbbbbbbbbbbbbbb'
   const personalName = '研发团队'

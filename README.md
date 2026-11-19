@@ -6,6 +6,12 @@
 
 ---
 
+> **DSH 0.2.2+ 兼容说明**：从 0.2.3 起，插件改用共享 `/api` RPC 通道
+> （`connection.rpc.intercept('/api', ...)`，URL 形如 `/api/gateway-switch/state`）。
+> 旧版插件用私有通道 `/gateway-switch` 注册，在 DSH 0.2.2+ 上会报
+> `transport failure for /gateway-switch/state: HTTP 405`（私有 prefix 路由对 POST
+> 会落到静态资源兜底）。升级到 0.2.3 即可修复；`engines.dsh` 已声明 `>=0.2.2`。
+
 ## 它长什么样
 
 ```

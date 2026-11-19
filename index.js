@@ -24,8 +24,10 @@ import { fileURLToPath } from 'node:url'
 export const name = 'gateway-switch'
 export const inject = ['credentials']
 
-/** 浏览器与宿主之间的私有 RPC 通道前缀（绝对路径，由 connection 传输鉴权）。 */
-export const CHANNEL = '/gateway-switch'
+/** 共享 RPC 通道；插件在这个通道上用 intercept 认领自己的 endpoint（由 connection 传输鉴权）。 */
+const API_CHANNEL = '/api'
+/** 本插件在共享通道里的 endpoint 命名空间：/api/gateway-switch/<endpoint>。 */
+const RPC_NAMESPACE = 'gateway-switch'
 
 const DEFAULT_CREDENTIAL_REF = 'OPENVIKING_GATEWAY_KEY'
 const DEFAULT_GATEWAY_BASE = 'http://localhost:1933/gateway'
@@ -696,14 +698,21 @@ export function createHandlers({ config = {}, credentials, storePath, fetchImpl 
 export function apply(ctx, config = {}) {
   const handlers = createHandlers({ config, credentials: ctx.credentials })
 
-  ctx.inject(['connection', 'webServer'], connectionCtx => {
+  // DSH 0.2.2 起，插件不再注册私有 RPC 通道（私有 prefix 路由对 POST 会落到静态资源兜底而返回 405），
+  // 改为在共享的 /api 通道上用 intercept 认领自己的 endpoint：URL /api/gateway-switch/<endpoint>。
+  ctx.inject(['connection'], connectionCtx => {
     const connection = connectionCtx.root.connection
-    if (!connection?.rpc?.handle) {
-      ctx.logger?.warn?.('gateway-switch: 宿主没有 connection.rpc，设置页的切换通道不可用')
+    if (!connection?.rpc?.intercept) {
+      ctx.logger?.warn?.('gateway-switch: 宿主没有 connection.rpc.intercept，设置页的切换通道不可用')
       return
     }
     connectionCtx.effect(
-      () => connection.rpc.handle(CHANNEL, (endpoint, payload) => handlers.handle(endpoint, payload)),
+      () => connection.rpc.intercept(
+        API_CHANNEL,
+        endpoint => typeof endpoint === 'string'
+          && (endpoint === RPC_NAMESPACE || endpoint.startsWith(RPC_NAMESPACE + '/')),
+        (endpoint, payload) => handlers.handle(String(endpoint).slice(RPC_NAMESPACE.length + 1), payload),
+      ),
       'gateway-switch: settings rpc channel',
     )
   })

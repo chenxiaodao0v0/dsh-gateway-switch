@@ -10,7 +10,7 @@
  * UI 落点两处：
  *   1. 设置 → 插件 → 「网关密钥」页（slot `plugins.item`）——完整管理；
  *   2. 输入框下方的药丸（slot `conversation.composer.dock`）——随手切换。
- * 与宿主通信：`connection.rpc.call('/gateway-switch', endpoint, payload)`。
+ * 与宿主通信：`connection.rpc.call('/api', 'gateway-switch/' + endpoint, payload)`（DSH 0.2.2+ 共享通道）。
  */
 window.__ModuleLoader__.load({
   id: 'dsh-plugin-gateway-switch',
@@ -20,7 +20,10 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
 
     const React = require('react')
-    const CHANNEL = '/gateway-switch'
+    // DSH 0.2.2 起插件共用 /api 通道，各自的 endpoint 用命名空间区分：
+    //   rpc.call('/api', 'gateway-switch/state')  →  POST /api/gateway-switch/state
+    const API_CHANNEL = '/api'
+    const RPC_NAMESPACE = 'gateway-switch'
 
     /** 空操作的安全取值：宿主没有 connection 服务时把状态显示成「不可用」而不是崩掉。 */
     let readConnection = () => undefined
@@ -43,7 +46,7 @@ window.__ModuleLoader__.load({
         return { ok: false, error: { message: '宿主没有可用的 connection.rpc 通道，无法读写网关密钥。' } }
       }
       try {
-        const result = await rpc.call(CHANNEL, endpoint, payload || {})
+        const result = await rpc.call(API_CHANNEL, `${RPC_NAMESPACE}/${endpoint}`, payload || {})
         if (result && typeof result === 'object' && typeof result.ok === 'boolean') {
           return result.ok ? { ok: true, value: result.value } : { ok: false, error: result.error || { message: '调用失败' } }
         }

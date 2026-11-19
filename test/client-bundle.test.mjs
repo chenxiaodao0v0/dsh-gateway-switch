@@ -140,8 +140,9 @@ describe('client bundle', () => {
     await Promise.resolve()
 
     assert.equal(calls.length, 1, 'apply 只应上报一条 trace')
-    assert.equal(calls[0].channel, '/gateway-switch')
-    assert.equal(calls[0].endpoint, 'trace')
+    // DSH 0.2.2+：插件共用 /api 通道，endpoint 用命名空间区分
+    assert.equal(calls[0].channel, '/api')
+    assert.equal(calls[0].endpoint, 'gateway-switch/trace')
     assert.equal(calls[0].payload.tag, 'client:apply')
   })
 })
