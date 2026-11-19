@@ -131,7 +131,16 @@ window.__ModuleLoader__.load({
      * 「设置 → 插件 → 网关密钥」页面。
      * 所有状态都在组件内部（hooks），不依赖 slot 注入的 controller，避免绑定宿主内部实现。
      */
-    function GatewaySwitchPage() {
+    /**
+     * 插件详情页里 `plugins.item` 会被渲染两次：`view: 'summary'`（标题下的描述区）
+     * 和 `view: 'page'`（正文配置区）。只在 page 视图渲染完整面板，summary 只给一行简介，
+     * 否则同一份面板会出现两次。
+     */
+    function GatewaySwitchPage(props) {
+      const view = props && props.view
+      if (view === 'summary') {
+        return h('span', null, '一键切换 OpenViking Gateway Key；加入团队后自动回流团队记忆。')
+      }
       const [data, setData] = React.useState(null)
       const [error, setError] = React.useState('')
       const [notice, setNotice] = React.useState('')
