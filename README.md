@@ -10,7 +10,8 @@
 > （`connection.rpc.intercept('/api', ...)`，URL 形如 `/api/gateway-switch/state`）。
 > 旧版插件用私有通道 `/gateway-switch` 注册，在 DSH 0.2.2+ 上会报
 > `transport failure for /gateway-switch/state: HTTP 405`（私有 prefix 路由对 POST
-> 会落到静态资源兜底）。升级到 0.2.3 即可修复；`engines.dsh` 已声明 `>=0.2.2`。
+> 会落到静态资源兜底）。升级到 0.2.3 即可修复；`engines.dsh` 声明 `>=0.2.2-rc.5`（注意：semver 里 `0.2.2-rc.5 < 0.2.2`，
+> 写成 `>=0.2.2` 会把当前所有 rc 版本判成不兼容）。
 
 ## 它长什么样
 
